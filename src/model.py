@@ -1,14 +1,24 @@
 import numpy as np
 from stable_baselines3 import PPO
 
-def train_model(env, total_timesteps=50000, learning_rate=3e-4, n_steps=2048, 
+def train_model(env, total_timesteps=50000, learning_rate=3e-4, n_steps=1024, 
                 batch_size=64, n_epochs=10, gamma=0.99, verbose=0):
     """
-    Train PPO model with configurable hyperparameters.
+    Train PPO model with optimized hyperparameters for pricing environment.
     
-    For POMDP handling with frame stacking, we use standard MlpPolicy
-    which learns to extract temporal patterns from stacked observations.
+    Key tuning choices:
+    - Smaller n_steps (1024) for faster updates with short episodes
+    - ent_coef for exploration in discrete action space
+    - clip_range for stable learning
+    - Larger network for complex observations
     """
+    # Calculate appropriate n_steps based on expected episode length
+    # For short episodes, we want more frequent updates
+    
+    policy_kwargs = dict(
+        net_arch=dict(pi=[128, 128], vf=[128, 128])  # Larger networks
+    )
+    
     model = PPO(
         "MlpPolicy", 
         env, 
@@ -18,6 +28,10 @@ def train_model(env, total_timesteps=50000, learning_rate=3e-4, n_steps=2048,
         n_epochs=n_epochs,
         gamma=gamma,
         verbose=verbose,
+        ent_coef=0.01,  # Encourage exploration
+        clip_range=0.2,
+        max_grad_norm=0.5,
+        policy_kwargs=policy_kwargs,
         tensorboard_log=None
     )
     model.learn(total_timesteps=total_timesteps, progress_bar=True)

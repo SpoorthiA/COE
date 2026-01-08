@@ -107,15 +107,18 @@ class ABTestingFramework:
             done = done_arr[0]
             info = info_arr[0]
             
+            # Use unscaled reward for business reporting (if available)
+            unscaled_reward = info.get('unscaled_reward', float(reward[0]))
+            
             # Collect time series data
-            metrics.rewards.append(float(reward[0]))
+            metrics.rewards.append(unscaled_reward)
             metrics.prices.append(info['price'])
             metrics.demands.append(info['demand'])
             metrics.inventories.append(info['inventory'])
             metrics.days_to_expiry.append(info.get('days_to_expiry', 0))
             metrics.competitor_prices.append(info['competitor_price'])
             
-            metrics.total_reward += float(reward[0])
+            metrics.total_reward += unscaled_reward
             metrics.total_units_sold += info['demand']
             metrics.total_spoiled_units += info.get('spoiled_units', 0)
             metrics.episode_length += 1

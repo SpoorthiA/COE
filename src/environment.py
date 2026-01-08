@@ -68,7 +68,7 @@ class RealisticPricingEnv(gym.Env):
         self.obs_buffer = None
 
     def _get_base_obs(self):
-        """Get single-step observation with enhanced state variables."""
+        """Get NORMALIZED observation for stable RL training."""
         inventory_ratio = self.inventory / self.initial_inventory
         
         # Urgency score: combines expiry pressure and low inventory signal
@@ -76,17 +76,18 @@ class RealisticPricingEnv(gym.Env):
         inventory_urgency = 1.0 - inventory_ratio if inventory_ratio < self.low_inventory_threshold else 0.0
         urgency_score = max(expiry_urgency, inventory_urgency)
         
+        # NORMALIZED observations (all values roughly in [-1, 1] or [0, 1] range)
         return np.array([
-            self.current_price,
-            self.historical_demand,
-            self.competitor_price,
-            float(self.current_hour),
-            float(self.current_dow),
-            self.inventory,
-            self.elasticity,
-            float(self.days_to_expiry),
-            inventory_ratio,
-            urgency_score
+            (self.current_price - 50) / 50,  # Normalize price around midpoint
+            self.historical_demand / (self.base_demand * 2),  # Normalize demand
+            (self.competitor_price - 50) / 50,  # Normalize competitor price
+            self.current_hour / 23.0,  # Normalize hour [0, 1]
+            self.current_dow / 6.0,  # Normalize day of week [0, 1]
+            inventory_ratio,  # Already normalized [0, 1]
+            (self.elasticity + 1.3) / 1.2,  # Normalize elasticity (typically -2.5 to -0.1)
+            self.days_to_expiry / self.initial_days_to_expiry,  # Normalize expiry [0, 1]
+            inventory_ratio,  # Already normalized
+            urgency_score  # Already [0, 1]
         ], dtype=np.float32)
 
     def _get_obs(self):
@@ -111,7 +112,8 @@ class RealisticPricingEnv(gym.Env):
             'spoiled_units': float(getattr(self, 'last_spoiled_units', 0)),
             'inventory_ratio': float(self.inventory / self.initial_inventory),
             'price_floor': float(self._get_price_floor()),
-            'price_ceiling': float(self._get_price_ceiling())
+            'price_ceiling': float(self._get_price_ceiling()),
+            'unscaled_reward': float(getattr(self, 'last_unscaled_reward', 0))
         }
     
     def _get_price_floor(self):
@@ -135,7 +137,8 @@ class RealisticPricingEnv(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self.current_step = 0
-        self.max_steps = 365 
+        # Episode length should match product lifecycle, not arbitrary 365 days
+        self.max_steps = self.initial_days_to_expiry + 5  # Allow a few days buffer
         self.current_hour = self.np_random.integers(0, 24)
         self.current_dow = self.np_random.integers(0, 7)
         self.inventory = self.initial_inventory
@@ -214,19 +217,39 @@ class RealisticPricingEnv(gym.Env):
         # Update inventory after sales
         self.inventory -= demand
         self.total_sold_units += demand
+        
+        # Calculate inventory ratio for reward shaping
+        inventory_ratio = self.inventory / self.initial_inventory if self.initial_inventory > 0 else 0
 
-        # === Reward Calculation with Spoilage Penalties ===
+        # === Reward Calculation with Better Scaling for RL ===
         revenue = (self.current_price - self.production_cost) * demand
         self.total_revenue += revenue
         
-        reward = float(revenue)
-        reward -= abs(delta_price) * self.price_change_penalty
-        reward -= spoilage_penalty  # Penalize spoilage
+        # Scale reward to reasonable range for RL (roughly -10 to +10 per step)
+        # This helps with gradient stability
+        reward_scale = self.base_demand * self.production_cost  # Normalize by expected revenue
         
-        # Bonus for selling near-expiry inventory (encourages proactive markdown)
+        reward = float(revenue) / reward_scale  # Normalized revenue
+        reward -= abs(delta_price) * (self.price_change_penalty / reward_scale)  # Normalized penalty
+        reward -= spoilage_penalty / reward_scale  # Normalized spoilage penalty
+        
+        # Bonus for selling inventory (encourages sales over holding)
+        if demand > 0:
+            sales_bonus = 0.1 * (demand / self.base_demand)  # Reward for making sales
+            reward += sales_bonus
+        
+        # Stronger urgency bonus near expiry
         if self.days_to_expiry <= 5 and demand > 0:
-            urgency_bonus = demand * 0.5  # Small bonus for moving near-expiry stock
+            urgency_bonus = 0.5 * (demand / self.base_demand) * (6 - self.days_to_expiry) / 5
             reward += urgency_bonus
+        
+        # Penalty for holding too much inventory near expiry (encourages markdown)
+        if self.days_to_expiry <= 10 and inventory_ratio > 0.5:
+            holding_penalty = 0.1 * inventory_ratio * (11 - self.days_to_expiry) / 10
+            reward -= holding_penalty
+        
+        # Store unscaled reward for reporting
+        self.last_unscaled_reward = float(revenue) - spoilage_penalty
 
         # Update competitor price *after* our move
         self._update_competitor_price(old_price)
