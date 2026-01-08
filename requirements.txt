@@ -1,0 +1,9 @@
+streamlit
+pandas
+numpy
+matplotlib
+seaborn
+stable-baselines3[extra]
+gymnasium
+openpyxl
+scipy
